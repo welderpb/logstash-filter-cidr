@@ -2,6 +2,7 @@
 require "logstash/filters/base"
 require "logstash/namespace"
 require "ipaddr"
+require "json"
 
 # The CIDR filter is for checking IP addresses in events against a list of
 # network blocks that might contain it. Multiple addresses can be checked
@@ -56,6 +57,8 @@ class LogStash::Filters::CIDR < LogStash::Filters::Base
   # pointed by network_path.
   config :separator, :validate => :string, :default => "\n"
 
+  config :destination, :validate => :string, :default => "translation"
+
   public
   def register
     rw_lock = java.util.concurrent.locks.ReentrantReadWriteLock.new
@@ -101,9 +104,13 @@ class LogStash::Filters::CIDR < LogStash::Filters::Base
 
   def load_file
     begin
-      temporary = File.open(@network_path, "r") {|file| file.read.split(@separator)}
-      if !temporary.empty? #ensuring the file was parsed correctly
-        @network_list = temporary
+      if @network_path.end_with?(".json")
+        dictionary = JSON.parse(File.read(@network_path)
+      else
+        temporary = File.open(@network_path, "r") {|file| file.read.split(@separator)}
+        if !temporary.empty? #ensuring the file was parsed correctly
+          @network_list = temporary
+        end
       end
     rescue
       if @network_list #if the list was parsed successfully before
@@ -141,14 +148,16 @@ class LogStash::Filters::CIDR < LogStash::Filters::Base
         end #end lock
       end #end refresh from file
 
-      network = @network_list.collect do |n|
-        begin
-          lock_for_read do
-            IPAddr.new(n)
+      if !@network_path.end_with?(".json")
+        network = @network_list.collect do |n|
+          begin
+            lock_for_read do
+              IPAddr.new(n)
+            end
+          rescue ArgumentError => e
+            @logger.warn("Invalid IP network, skipping", :network => n, :event => event)
+            nil
           end
-        rescue ArgumentError => e
-          @logger.warn("Invalid IP network, skipping", :network => n, :event => event)
-          nil
         end
       end
 
@@ -164,13 +173,30 @@ class LogStash::Filters::CIDR < LogStash::Filters::Base
       end
     end
 
-    network.compact! #clean nulls
-    # Try every combination of address and network, first match wins
-    address.product(network).each do |a, n|
-      @logger.debug("Checking IP inclusion", :address => a, :network => n)
-      if n.include?(a)
-        filter_matched(event)
-        return
+    if @network_path.end_with?(".json") 
+      address.product(dictionary.keys).each do |a, n|
+        @logger.debug("Checking IP inclusion", :address => a, :network => n)
+        begin
+          net = IPAddr.new(n)
+	        if net.include?(a)
+            filter_matched(event)
+            event.set(@destination, lock_for_read { dictionary[n] })
+            return
+	        end
+
+	      rescue ArgumentError => e
+	        nil
+	      end
+      end  
+    else
+      network.compact! #clean nulls
+      # Try every combination of address and network, first match wins
+      address.product(network).each do |a, n|
+        @logger.debug("Checking IP inclusion", :address => a, :network => n)
+        if n.include?(a)
+          filter_matched(event)
+          return
+        end
       end
     end
   end # def filter
