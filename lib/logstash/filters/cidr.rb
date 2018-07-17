@@ -105,7 +105,7 @@ class LogStash::Filters::CIDR < LogStash::Filters::Base
   def load_file
     begin
       if @network_path.end_with?(".json")
-        dictionary = JSON.parse(File.read(@network_path)
+        @dictionary = JSON.parse(File.read(@network_path))
       else
         temporary = File.open(@network_path, "r") {|file| file.read.split(@separator)}
         if !temporary.empty? #ensuring the file was parsed correctly
@@ -148,7 +148,7 @@ class LogStash::Filters::CIDR < LogStash::Filters::Base
         end #end lock
       end #end refresh from file
 
-      if !@network_path.end_with?(".json")
+      if @dictionary.nil?
         network = @network_list.collect do |n|
           begin
             lock_for_read do
@@ -173,16 +173,16 @@ class LogStash::Filters::CIDR < LogStash::Filters::Base
       end
     end
 
-    if @network_path.end_with?(".json") 
-      address.product(dictionary.keys).each do |a, n|
+    if !@dictionary.nil?
+      address.product(@dictionary.keys).each do |a, n|
         @logger.debug("Checking IP inclusion", :address => a, :network => n)
         begin
           net = IPAddr.new(n)
-	        if net.include?(a)
+          if net.include?(a)
             filter_matched(event)
-            event.set(@destination, lock_for_read { dictionary[n] })
+            event.set(@destination, lock_for_read { @dictionary[n] })
             return
-	        end
+          end
 
 	      rescue ArgumentError => e
 	        nil
